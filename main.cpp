@@ -6,6 +6,7 @@
 #include <vector>
 #define NUM_THREADS 11
 
+
 using namespace std;
 
 
@@ -218,49 +219,87 @@ public:
         *pp = pred;
     }
 };
-CLH_lock locker;
 
 
-void* phases2(void* args)
-{
 
-    extern int count;
-
-    for (int i=0; i < 1000; i++ ){
-        Qnode *Q = new Qnode();
-        Qnode** Q_ptr = &Q;
-//        Q.next.store(nullptr);
-//        Q.waiting.store(false);
-        locker.acquire(Q);
-        count++;
-        locker.release(Q_ptr);
+//void* phases2(void* args)
+//{
+//
+//    extern int count;
+//
+//    for (int i=0; i < 1000; i++ ){
+//        Qnode *Q = new Qnode();
+//        Qnode** Q_ptr = &Q;
+////        Q.next.store(nullptr);
+////        Q.waiting.store(false);
+//        locker.acquire(Q);
+//        count++;
+//        locker.release(Q_ptr);
+//    }
+//
+//}
+struct CLH_node{
+    atomic<bool> waiting;
+    CLH_node(bool wait){
+        this->waiting.store(wait);
     }
+    CLH_node(){
+        this->waiting.store(false);
+    }
+};
+CLH_node initial_thread_nodes[NUM_THREADS];
+CLH_node* thread_node_ptrs[NUM_THREADS];
 
-}
+class K42_CLH_lock{
+    CLH_node dummy = {false};
+    atomic<CLH_node*> tail;
+    atomic<CLH_node*> head;
+public:
+    K42_CLH_lock(){
+        this->tail.store(&dummy);
+    }
+    void acquire(int self){
+        CLH_node* p = thread_node_ptrs[self];
+        p->waiting.store(true);
+        CLH_node* pred = tail.exchange(p);
+        while (pred->waiting.load());
+        head.store(p);
+        thread_node_ptrs[self] = pred;
+    }
+    void release(){
+        head.load()->waiting.store(false);
+    }
+};
+K42_CLH_lock locker;
 void* K42_CLH(void* args)
 {
-
+    int self = (long) args;
+//    cout<<self<<endl;
+//    sleep(10);
     extern int count;
-
     for (int i=0; i < 1000; i++ ){
-        Qnode *Q = new Qnode();
-        Qnode** Q_ptr = &Q;
+//        Qnode *Q = new Qnode();
+//        Qnode** Q_ptr = &Q;
 //        Q.next.store(nullptr);
 //        Q.waiting.store(false);
-        locker.acquire(Q);
+        locker.acquire(self);
         count++;
-        locker.release(Q_ptr);
+        locker.release();
     }
 
 }
 int main() {
+    for(int i = 0; i<NUM_THREADS;i++){
+        thread_node_ptrs[i] = &initial_thread_nodes[i];
+    }
     extern int count;
     pthread_t tids[NUM_THREADS];
 
 
-    for(int i = 0; i < NUM_THREADS; ++i)
+    for(int i = 0; i < NUM_THREADS; i++)
     {
-        pthread_create(&tids[i], NULL, phases2, NULL);
+        int self = i;
+        pthread_create(&tids[i], NULL, K42_CLH, (void*)self);
     }
     for( int i=0; i < NUM_THREADS; i++ ) {
         pthread_join(tids[i],NULL);
