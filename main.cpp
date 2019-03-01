@@ -77,6 +77,10 @@ struct Qnode{
         next = NULL;
         waiting.store(false);
     }
+    Qnode(Qnode *next,bool waiting) {
+        this->next.store(next);
+        this->waiting.store(waiting);
+    }
 };
 
 class MCS_lock{
@@ -194,7 +198,27 @@ public:
         succ->tail.store(nullptr);
     }
 };
-K42_MCS_lock locker;
+
+class CLH_lock{
+    Qnode dummy = {nullptr, false};
+    atomic<Qnode*> tail;
+public:
+    CLH_lock(){
+        this->tail.store(&dummy);
+    }
+    void acquire(Qnode* p){
+        p->waiting.store(true);
+        p->next = tail.exchange(p);
+        Qnode* pred = p->next;
+        while(pred->waiting.load());
+    }
+    void release(Qnode** pp){
+        Qnode *pred = (*pp)->next;
+        (*pp)->waiting.store(false);
+        *pp = pred;
+    }
+};
+CLH_lock locker;
 
 
 void* phases2(void* args)
@@ -203,14 +227,29 @@ void* phases2(void* args)
     extern int count;
 
     for (int i=0; i < 1000; i++ ){
-//        Qnode Q ;
-
+        Qnode *Q = new Qnode();
+        Qnode** Q_ptr = &Q;
 //        Q.next.store(nullptr);
 //        Q.waiting.store(false);
-        locker.acquire();
+        locker.acquire(Q);
         count++;
-        locker.release();
-//        delete(Q);
+        locker.release(Q_ptr);
+    }
+
+}
+void* K42_CLH(void* args)
+{
+
+    extern int count;
+
+    for (int i=0; i < 1000; i++ ){
+        Qnode *Q = new Qnode();
+        Qnode** Q_ptr = &Q;
+//        Q.next.store(nullptr);
+//        Q.waiting.store(false);
+        locker.acquire(Q);
+        count++;
+        locker.release(Q_ptr);
     }
 
 }
