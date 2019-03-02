@@ -4,26 +4,15 @@
 #include <zconf.h>
 #include <algorithm>
 #include <vector>
-#define NUM_THREADS 11
-
-
 using namespace std;
-
-
-int count = 0;
+int  NUM_THREADS =5;
+std::atomic<bool> ready (false);
+int NUM_ITER = 1000;
+int COUNT = 0;
 
 class test_and_set_lock{
-private:
-    std::atomic<bool> ready ;
-
-    bool test_and_set(bool * flag){
-        *flag = true;
-        return *flag;
-    }
-
 protected:
     std::atomic_flag flag = ATOMIC_FLAG_INIT;
-
 public:
     void acquire(){
         while (flag.test_and_set());
@@ -32,11 +21,13 @@ public:
         flag.clear();
     }
 };
+
 class TSA_lock_backoff :public test_and_set_lock{
 private:
-    const int base =1;
-    const int limit = 1;
-    const int multiplier = 1;
+    const int base =0.001;
+    const int limit = 0.02;
+    const int multiplier = 0.1;
+//    std::atomic_flag flag = ATOMIC_FLAG_INIT;
 public:
     void acquire(){
         int deley = base;
@@ -62,7 +53,7 @@ public:
 };
 class ticket_lock_backoff:public ticket_lock{
 private:
-    const double base = 0.000001;
+    const double base = 0.0000000001;
 public:
     void acquire(){
         int my_ticket = next_ticket.fetch_add(1);
@@ -89,50 +80,30 @@ class MCS_lock{
     std::atomic<Qnode*> tail ;
 public:
     void acquire(Qnode &q){
-//        Qnode* myself = new Qnode;
-//        myself->waiting.store(true);
-//        q->next.store(myself);
         q.next.store(nullptr);
         q.waiting.store(true,std::memory_order_relaxed);
-//        Qnode *tmp = &q;
         Qnode* prev = tail.exchange(&q,std::memory_order_release);
-////        atomic_compare_exchange_strong(tail,q,NULL);
-//        tail.compare_exchange_strong(prev,q);
         if (prev != nullptr){
             prev->next.store(&q,std::memory_order_relaxed);
             while (q.waiting.load()){
-//                sleep(0.2);
-//                cout<<"acquire,while"<<pthread_self()<<endl;
             }
-
         }
-//        cout<<"=";
-//        cout<<"acquire"<<endl;
         atomic_thread_fence(std::memory_order_acquire);
         atomic_signal_fence(std::memory_order_acquire);
     }
     void release(Qnode &q){
-//        atomic<Qnode* > tmp = *(q->next);
         Qnode* succ = (q.next).load(std::memory_order_acquire);
         if (succ == nullptr){
-//            cout<<'1'<<endl;
             Qnode *tmp = &q;
             Qnode *_null = nullptr;
             if (tail.compare_exchange_strong(tmp, _null)){
-//                q.waiting.store(false,std::memory_order_acquire);
-//                cout<<"release"<<endl;
                 return;
             }
             while(succ == nullptr){
-//                sleep(0.2);
-//                cout<<"release,while"<<pthread_self()<<endl;
                 succ = q.next.load(std::memory_order_relaxed);
             }
         }
         succ->waiting.store(false);
-//        cout<<"="<<endl;
-//        atomic_thread_fence(std::memory_order_seq_cst);
-//        cout<<"release"<<endl;
     }
 };
 struct K42_Qnode{
@@ -220,24 +191,6 @@ public:
     }
 };
 
-
-
-//void* phases2(void* args)
-//{
-//
-//    extern int count;
-//
-//    for (int i=0; i < 1000; i++ ){
-//        Qnode *Q = new Qnode();
-//        Qnode** Q_ptr = &Q;
-////        Q.next.store(nullptr);
-////        Q.waiting.store(false);
-//        locker.acquire(Q);
-//        count++;
-//        locker.release(Q_ptr);
-//    }
-//
-//}
 struct CLH_node{
     atomic<bool> waiting;
     CLH_node(bool wait){
@@ -247,65 +200,166 @@ struct CLH_node{
         this->waiting.store(false);
     }
 };
-CLH_node initial_thread_nodes[NUM_THREADS];
-CLH_node* thread_node_ptrs[NUM_THREADS];
+CLH_node **_thread_node_ptrs;
 
 class K42_CLH_lock{
     CLH_node dummy = {false};
     atomic<CLH_node*> tail;
     atomic<CLH_node*> head;
+
 public:
     K42_CLH_lock(){
         this->tail.store(&dummy);
     }
     void acquire(int self){
-        CLH_node* p = thread_node_ptrs[self];
+        CLH_node* p = _thread_node_ptrs[self];
         p->waiting.store(true);
         CLH_node* pred = tail.exchange(p);
         while (pred->waiting.load());
         head.store(p);
-        thread_node_ptrs[self] = pred;
+        _thread_node_ptrs[self] = pred;
     }
     void release(){
         head.load()->waiting.store(false);
     }
 };
-K42_CLH_lock locker;
-void* K42_CLH(void* args)
+
+
+test_and_set_lock TASlock;
+void* test_and_set_lock_func(void* args){
+    while (!ready);
+    for (int i=0; i < NUM_ITER; i++ ){
+        TASlock.acquire();
+        COUNT++;
+        TASlock.release();
+    }
+}
+
+TSA_lock_backoff TAS_back_off_lock;
+void* TSA_lock_backoff_func(void* args){
+
+    while (!ready);
+    for (int i=0; i < NUM_ITER; i++ ){
+        TAS_back_off_lock.acquire();
+        COUNT++;
+        TAS_back_off_lock.release();
+    }
+}
+
+ticket_lock ticket_locker;
+void* ticket_lock_func(void* args){
+    while (!ready);
+    for (int i=0; i < NUM_ITER; i++ ){
+        ticket_locker.acquire();
+        COUNT++;
+        ticket_locker.release();
+    }
+}
+
+ticket_lock_backoff ticket_locker_backoff;
+void *ticket_lock_backoff_func(void* args){
+    while (!ready);
+    for (int i=0; i < NUM_ITER; i++ ){
+        ticket_locker_backoff.acquire();
+        COUNT++;
+        ticket_locker_backoff.release();
+    }
+}
+
+MCS_lock MCS_locker;
+void* MCS_lock_func(void * args){
+    while (!ready);
+    for (int i=0; i < NUM_ITER; i++ ){
+        Qnode Q;
+        MCS_locker.acquire(Q);
+        COUNT++;
+        MCS_locker.release(Q);
+    }
+}
+
+K42_MCS_lock K42_MCS_locker;
+void* K42_MCS_lock_func(void * args){
+    while (!ready);
+    for (int i=0; i < NUM_ITER; i++ ){
+        K42_MCS_locker.acquire();
+        COUNT++;
+        K42_MCS_locker.release();
+    }
+}
+
+CLH_lock CLH_locker;
+void* CLH_lock_func(void* args){
+    while (!ready);
+    for (int i=0; i < NUM_ITER; i++ ){
+        Qnode *q = new Qnode;
+        CLH_locker.acquire(q);
+        COUNT++;
+        CLH_locker.release(&q);
+    }
+}
+
+K42_CLH_lock K42_CLH_locker;
+void* K42_CLH_lock_func(void* args)
 {
     int self = (long) args;
-//    cout<<self<<endl;
-//    sleep(10);
-    extern int count;
-    for (int i=0; i < 1000; i++ ){
-//        Qnode *Q = new Qnode();
-//        Qnode** Q_ptr = &Q;
-//        Q.next.store(nullptr);
-//        Q.waiting.store(false);
-        locker.acquire(self);
-        count++;
-        locker.release();
+    for (int i=0; i < NUM_ITER; i++ ){
+        K42_CLH_locker.acquire(self);
+        COUNT++;
+        K42_CLH_locker.release();
     }
 
 }
-int main() {
+void zhangyu(pthread_t *tids, void *func(void *arg)) {
+    ready = false;
+    COUNT = 0;
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        pthread_create(&tids[i], NULL, func, (void *) i);
+    }
+    ready = true;
+    auto time1 = std::chrono::high_resolution_clock::now();
+    for (int i = 0; i < NUM_THREADS; i++) {
+        pthread_join(tids[i], NULL);
+    }
+    auto time2 = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> diff = time2 - time1;
+    cout<<"result:  "<<COUNT<<endl;
+    cout<<"run time: "<<diff.count()<<endl;
+}
+int main(int argc,char **argv) {
+    int n_ = 1000;
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "-t")) {
+            NUM_THREADS = stoi(argv[i + 1]);
+        } else if (!strcmp(argv[i], "-i")) {
+            NUM_ITER = stoi(argv[i + 1]);
+        }
+    }
+    cout<<NUM_THREADS<<endl;
+    cout<<NUM_ITER<<endl;
+
+    CLH_node initial_thread_nodes[NUM_THREADS];
+    CLH_node* thread_node_ptrs[NUM_THREADS];
     for(int i = 0; i<NUM_THREADS;i++){
         thread_node_ptrs[i] = &initial_thread_nodes[i];
     }
-    extern int count;
+    _thread_node_ptrs = thread_node_ptrs;
+
     pthread_t tids[NUM_THREADS];
+    cout<<"test_and_set_lock_:"<<endl;
+    zhangyu(tids,test_and_set_lock_func );
+    cout<<"TSA_lock_backoff:"<<endl;
+    zhangyu(tids,TSA_lock_backoff_func );
+    cout<<"ticket_lock:"<<endl;
+    zhangyu(tids,ticket_lock_func);
+    cout<<"ticket_lock_backoff:"<<endl;
+    zhangyu(tids,ticket_lock_backoff_func);
+    cout<<"MCS_lock:"<<endl;
+    zhangyu(tids,MCS_lock_func);
+    cout<<"K42_MCS_lock:"<<endl;
+    zhangyu(tids,K42_MCS_lock_func);
+    cout<<"CLH_lock_:"<<endl;
+    zhangyu(tids,CLH_lock_func);
+    cout<<"K42_CLH_lock:"<<endl;
+    zhangyu(tids,K42_CLH_lock_func);
 
-
-    for(int i = 0; i < NUM_THREADS; i++)
-    {
-        int self = i;
-        pthread_create(&tids[i], NULL, K42_CLH, (void*)self);
-    }
-    for( int i=0; i < NUM_THREADS; i++ ) {
-        pthread_join(tids[i],NULL);
-
-    }
-    cout<<count;
-
-    return 0;
 }
