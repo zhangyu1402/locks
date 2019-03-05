@@ -5,9 +5,9 @@
 #include <algorithm>
 #include <vector>
 using namespace std;
-int  NUM_THREADS =5;
+int  NUM_THREADS =13;
 std::atomic<bool> ready (false);
-int NUM_ITER = 1000;
+int NUM_ITER = 10000;
 int COUNT = 0;
 
 class test_and_set_lock{
@@ -65,14 +65,16 @@ public:
 struct Qnode{
     atomic<Qnode*> next;
     std::atomic<bool> waiting;
+    Qnode(Qnode const &other){}
     Qnode(){
-        next = NULL;
+        next.store(nullptr);
         waiting.store(false);
     }
     Qnode(Qnode *next,bool waiting) {
         this->next.store(next);
         this->waiting.store(waiting);
     }
+
 };
 
 class MCS_lock{
@@ -106,6 +108,8 @@ public:
         succ->waiting.store(false);
     }
 };
+
+
 struct K42_Qnode{
     atomic<K42_Qnode*> tail;
     atomic<K42_Qnode*> next;
@@ -191,7 +195,7 @@ public:
     }
 };
 
-struct CLH_node{
+struct CLH_node{\
     atomic<bool> waiting;
     CLH_node(bool wait){
         this->waiting.store(wait);
@@ -199,6 +203,9 @@ struct CLH_node{
     CLH_node(){
         this->waiting.store(false);
     }
+//    CLH_node(CLH_node const &other){
+//        this->waiting.store(other.waiting.load()) ;
+//    }
 };
 CLH_node **_thread_node_ptrs;
 
@@ -270,7 +277,7 @@ MCS_lock MCS_locker;
 void* MCS_lock_func(void * args){
     while (!ready);
     for (int i=0; i < NUM_ITER; i++ ){
-        Qnode Q;
+        Qnode Q ;
         MCS_locker.acquire(Q);
         COUNT++;
         MCS_locker.release(Q);
@@ -295,17 +302,22 @@ void* CLH_lock_func(void* args){
         CLH_locker.acquire(q);
         COUNT++;
         CLH_locker.release(&q);
+//        delete  q;
     }
 }
 
-K42_CLH_lock K42_CLH_locker;
+K42_CLH_lock K42_CLH_locker ;
 void* K42_CLH_lock_func(void* args)
 {
-    int self = (long) args;
+    long self = (long) args;
+
     for (int i=0; i < NUM_ITER; i++ ){
-        K42_CLH_locker.acquire(self);
+        K42_CLH_locker.acquire((int)self);
         COUNT++;
+        if (COUNT%1000 == 0)
+            cout<<COUNT<<endl;
         K42_CLH_locker.release();
+
     }
 
 }
@@ -343,22 +355,25 @@ int main(int argc,char **argv) {
         thread_node_ptrs[i] = &initial_thread_nodes[i];
     }
     _thread_node_ptrs = thread_node_ptrs;
-
+//    for (int i = 0;i < 10;i++){
+//        Qnode q ;
+//        cout<<"test";
+//    }
     pthread_t tids[NUM_THREADS];
-    cout<<"test_and_set_lock_:"<<endl;
-    zhangyu(tids,test_and_set_lock_func );
-    cout<<"TSA_lock_backoff:"<<endl;
-    zhangyu(tids,TSA_lock_backoff_func );
-    cout<<"ticket_lock:"<<endl;
-    zhangyu(tids,ticket_lock_func);
-    cout<<"ticket_lock_backoff:"<<endl;
-    zhangyu(tids,ticket_lock_backoff_func);
-    cout<<"MCS_lock:"<<endl;
-    zhangyu(tids,MCS_lock_func);
-    cout<<"K42_MCS_lock:"<<endl;
-    zhangyu(tids,K42_MCS_lock_func);
-    cout<<"CLH_lock_:"<<endl;
-    zhangyu(tids,CLH_lock_func);
+//    cout<<"test_and_set_lock_:"<<endl;
+//    zhangyu(tids,test_and_set_lock_func );
+//    cout<<"TSA_lock_backoff:"<<endl;
+//    zhangyu(tids,TSA_lock_backoff_func );
+//    cout<<"ticket_lock:"<<endl;
+//    zhangyu(tids,ticket_lock_func);
+//    cout<<"ticket_lock_backoff:"<<endl;
+//    zhangyu(tids,ticket_lock_backoff_func);
+//    cout<<"MCS_lock:"<<endl;
+//    zhangyu(tids,MCS_lock_func);
+//    cout<<"K42_MCS_lock:"<<endl;
+//    zhangyu(tids,K42_MCS_lock_func);
+//    cout<<"CLH_lock_:"<<endl;
+//    zhangyu(tids,CLH_lock_func);
     cout<<"K42_CLH_lock:"<<endl;
     zhangyu(tids,K42_CLH_lock_func);
 
