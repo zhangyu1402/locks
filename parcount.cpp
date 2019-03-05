@@ -5,11 +5,11 @@
 #include <algorithm>
 #include <vector>
 using namespace std;
-int  NUM_THREADS =13;
+int  NUM_THREADS =8;
 std::atomic<bool> ready (false);
 int NUM_ITER = 10000;
 int COUNT = 0;
-
+pthread_key_t pthread_key;
 class test_and_set_lock{
 protected:
     std::atomic_flag flag = ATOMIC_FLAG_INIT;
@@ -219,12 +219,16 @@ public:
         this->tail.store(&dummy);
     }
     void acquire(int self){
-        CLH_node* p = _thread_node_ptrs[self];
+//        CLH_node* _p = _thread_node_ptrs[self];
+        CLH_node** p_ptr = (CLH_node**)pthread_getspecific(pthread_key);
+        CLH_node* p = *p_ptr;
         p->waiting.store(true);
         CLH_node* pred = tail.exchange(p);
         while (pred->waiting.load());
         head.store(p);
-        _thread_node_ptrs[self] = pred;
+//        _thread_node_ptrs[self] = pred;
+        *p_ptr = pred;
+
     }
     void release(){
         head.load()->waiting.store(false);
@@ -310,12 +314,14 @@ K42_CLH_lock K42_CLH_locker ;
 void* K42_CLH_lock_func(void* args)
 {
     long self = (long) args;
+    CLH_node* tmp = (_thread_node_ptrs[self]);
+    pthread_setspecific(pthread_key,&(_thread_node_ptrs[self]));
 
     for (int i=0; i < NUM_ITER; i++ ){
         K42_CLH_locker.acquire((int)self);
         COUNT++;
-        if (COUNT%1000 == 0)
-            cout<<COUNT<<endl;
+//        if (COUNT%1000 == 0)
+//            cout<<COUNT<<endl;
         K42_CLH_locker.release();
 
     }
@@ -324,6 +330,7 @@ void* K42_CLH_lock_func(void* args)
 void zhangyu(pthread_t *tids, void *func(void *arg)) {
     ready = false;
     COUNT = 0;
+    pthread_key_create(&pthread_key, nullptr);
     for (int i = 0; i < NUM_THREADS; ++i) {
         pthread_create(&tids[i], NULL, func, (void *) i);
     }
