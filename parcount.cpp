@@ -4,10 +4,13 @@
 #include <zconf.h>
 #include <algorithm>
 #include <vector>
+#include <atomic>
+#include <cstring>
+#include <chrono>
 using namespace std;
-int  NUM_THREADS =8;
+int  NUM_THREADS =4;
 std::atomic<bool> ready (false);
-int NUM_ITER = 10000;
+int NUM_ITER = 100000;
 int COUNT = 0;
 pthread_key_t pthread_key;
 class test_and_set_lock{
@@ -16,6 +19,8 @@ protected:
 public:
     void acquire(){
         while (flag.test_and_set());
+        atomic_thread_fence(std::memory_order_acquire);
+        atomic_signal_fence(std::memory_order_acquire);
     }
     void release(){
         flag.clear();
@@ -24,17 +29,27 @@ public:
 
 class TSA_lock_backoff :public test_and_set_lock{
 private:
-    const int base =0.001;
-    const int limit = 0.02;
-    const int multiplier = 0.1;
+    int base =10000;
+    int limit = 1000000;
+    float multiplier = 2;
 //    std::atomic_flag flag = ATOMIC_FLAG_INIT;
 public:
+    void set_TSA_lock_backoff(int a, int b, float c){
+        this->base = a;
+        this->limit = b;
+        this->multiplier = c;
+    }
+    TSA_lock_backoff(){
+    }
     void acquire(){
         int deley = base;
         while(flag.test_and_set()){
-            sleep(deley);
-            deley = min(deley*multiplier,limit);
+            auto time_first = std::chrono::high_resolution_clock::now();
+            while ((std::chrono::high_resolution_clock::now() - time_first).count() < deley) ;
+            deley = min((int)(deley*multiplier),limit);
         }
+        atomic_thread_fence(std::memory_order_acquire);
+        atomic_signal_fence(std::memory_order_acquire);
     }
 };
 class ticket_lock{
@@ -45,21 +60,29 @@ public:
     void acquire(){
         int my_ticket = next_ticket.fetch_add(1);
         while(my_ticket != now_serving.load());
+        atomic_thread_fence(std::memory_order_acquire);
+        atomic_signal_fence(std::memory_order_acquire);
     }
     void release(){
         now_serving.fetch_add(1);
     }
-
 };
 class ticket_lock_backoff:public ticket_lock{
 private:
-    const double base = 0.0000000001;
+    int base = 25;
 public:
+    void set_base(int a){
+        this->base = a;
+    }
     void acquire(){
         int my_ticket = next_ticket.fetch_add(1);
         while(my_ticket != now_serving.load()){
-            sleep(static_cast<unsigned int>(base * (my_ticket - now_serving.load())));
+            auto time_first = std::chrono::high_resolution_clock::now();
+            while ((std::chrono::high_resolution_clock::now() - time_first).count() < base);
         }
+        atomic_thread_fence(std::memory_order_acquire);
+        atomic_signal_fence(std::memory_order_acquire);
+
     }
 };
 struct Qnode{
@@ -158,6 +181,8 @@ public:
                }
            }
        }
+        atomic_thread_fence(std::memory_order_acquire);
+        atomic_signal_fence(std::memory_order_acquire);
     }
 
     void release(){
@@ -187,6 +212,8 @@ public:
         p->next = tail.exchange(p);
         Qnode* pred = p->next;
         while(pred->waiting.load());
+        atomic_thread_fence(std::memory_order_acquire);
+        atomic_signal_fence(std::memory_order_acquire);
     }
     void release(Qnode** pp){
         Qnode *pred = (*pp)->next;
@@ -195,7 +222,7 @@ public:
     }
 };
 
-struct CLH_node{\
+struct CLH_node{
     atomic<bool> waiting;
     CLH_node(bool wait){
         this->waiting.store(wait);
@@ -228,13 +255,24 @@ public:
         head.store(p);
 //        _thread_node_ptrs[self] = pred;
         *p_ptr = pred;
+        atomic_thread_fence(std::memory_order_acquire);
+        atomic_signal_fence(std::memory_order_acquire);
 
     }
     void release(){
         head.load()->waiting.store(false);
     }
 };
+std::mutex _mutex;
 
+void *mutex_func1(void* args){
+    while (!ready);
+    for (int i=0; i < NUM_ITER; i++ ){
+        _mutex.lock();
+        COUNT++;
+        _mutex.unlock();
+    }
+}
 
 test_and_set_lock TASlock;
 void* test_and_set_lock_func(void* args){
@@ -341,11 +379,12 @@ void zhangyu(pthread_t *tids, void *func(void *arg)) {
     }
     auto time2 = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> diff = time2 - time1;
-    cout<<"result:  "<<COUNT<<endl;
-    cout<<"run time: "<<diff.count()<<endl;
+//    cout<<"result:  "<<COUNT<<endl;
+//    cout<<"run time: "<<diff.count()<<endl;
+    cout<<(NUM_ITER)/diff.count()<<endl;
 }
 int main(int argc,char **argv) {
-    int n_ = 1000;
+//    int n_ = 1000;
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "-t")) {
             NUM_THREADS = stoi(argv[i + 1]);
@@ -353,8 +392,8 @@ int main(int argc,char **argv) {
             NUM_ITER = stoi(argv[i + 1]);
         }
     }
-    cout<<NUM_THREADS<<endl;
-    cout<<NUM_ITER<<endl;
+//    cout<<NUM_THREADS<<endl;
+//    cout<<NUM_ITER<<endl;
 
     CLH_node initial_thread_nodes[NUM_THREADS];
     CLH_node* thread_node_ptrs[NUM_THREADS];
@@ -367,6 +406,8 @@ int main(int argc,char **argv) {
 //        cout<<"test";
 //    }
     pthread_t tids[NUM_THREADS];
+//    cout<<"C++ mutex:"<<endl;
+//    zhangyu(tids,mutex_func1);
 //    cout<<"test_and_set_lock_:"<<endl;
 //    zhangyu(tids,test_and_set_lock_func );
 //    cout<<"TSA_lock_backoff:"<<endl;
@@ -381,7 +422,14 @@ int main(int argc,char **argv) {
 //    zhangyu(tids,K42_MCS_lock_func);
 //    cout<<"CLH_lock_:"<<endl;
 //    zhangyu(tids,CLH_lock_func);
-    cout<<"K42_CLH_lock:"<<endl;
-    zhangyu(tids,K42_CLH_lock_func);
+//    cout<<"K42_CLH_lock:"<<endl;
+//    zhangyu(tids,K42_CLH_lock_func);
+
+
+
+    for (int i = 10;i<10000000;i=i+10){
+        ticket_locker_backoff.set_base(i);
+        zhangyu(tids,ticket_lock_backoff_func);
+    }
 
 }
